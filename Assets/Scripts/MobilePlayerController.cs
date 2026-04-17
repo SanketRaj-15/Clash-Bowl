@@ -7,88 +7,138 @@ using TMPro;
 // Scene management for restarting and loading levels
 using UnityEngine.SceneManagement;
 
-// FIXED MobilePlayerController — PROPER TILT CONTROLS! 📱
-// Fixes the issue where tilting too far causes wrong movement.
-// Uses calibrated neutral position and clamped tilt values.
+// =============================================================
+// FIXED MobilePlayerController — PROPER TILT CONTROLS!
+// =============================================================
+// Fixes:
+// 1. Ball no longer goes wrong direction when tilted too far
+// 2. Calibrated neutral position (whatever angle you hold = center)
+// 3. Dead zone prevents drift when phone is level
+// 4. Clamped values prevent accelerometer confusion
+//
+// Features:
+// - Tilt movement
+// - Pickup collection with sound + pitch variation
+// - Score tracking
+// - Timer (counts UP)
+// - Best time saving (per level)
+// - Win condition + next level loading
+// - Screen shake on pickup
+// - Floating "+1" text
+// - Phone vibration on Android
+// =============================================================
 public class MobilePlayerController : MonoBehaviour
 {
     // =====================================================
-    // PUBLIC VARIABLES
+    // PUBLIC VARIABLES (editable in Inspector)
     // =====================================================
 
     // --- Movement ---
 
-    // How fast the ball moves.
+    // How fast the ball moves when tilted.
     public float speed = 10f;
 
-    // How sensitive the tilt is.
-    // Higher = more responsive to small tilts.
+    // How responsive the tilt is.
+    // Higher number = small tilt causes big movement.
+    // Lower number = need to tilt more for movement.
     public float tiltSensitivity = 2.0f;
 
-    // The maximum tilt angle (in acceleration units) that we accept.
-    // Values beyond this are clamped (limited).
-    // 0.5 means we only use tilt from -0.5 to +0.5.
-    // This PREVENTS the "wrong direction" bug when tilting too far!
+    // The maximum tilt value we accept (range: 0 to 1).
+    // Any tilt beyond this is ignored/clamped.
+    // This PREVENTS the bug where tilting too far (past 90 degrees)
+    // causes the ball to move in the WRONG direction!
+    // 0.5 = about 30 degree max tilt. Safe and comfortable.
     public float maxTiltAngle = 0.5f;
 
-    // A dead zone — tilts smaller than this are ignored.
-    // This prevents the ball from drifting when the phone is 
-    // almost level (small sensor noise).
-    // 0.05 means tilts less than 5% are treated as zero.
+    // Tilts smaller than this value are treated as zero.
+    // Prevents the ball from slowly drifting when the phone
+    // is almost level (sensors have tiny random noise).
     public float deadZone = 0.05f;
 
     // --- UI References ---
+
+    // Score text in the top-left corner.
     public TextMeshProUGUI scoreText;
+
+    // Win/Level Complete text (hidden until player wins).
     public GameObject winText;
+
+    // How many pickups exist in this level.
     public int totalPickups = 12;
+
+    // Timer text in the top-right corner.
     public TextMeshProUGUI timerText;
+
+    // Best time text below the timer.
     public TextMeshProUGUI bestTimeText;
 
     // --- Sound References ---
+
+    // Sound when collecting a good pickup.
     public AudioClip pickupSound;
+
+    // Sound when winning/completing the level.
     public AudioClip winSound;
 
     // --- Level Progression ---
+
+    // Name of the NEXT scene to load after winning.
+    // Leave EMPTY for the final level (just shows "You Win!").
+    // Set to "Level2" or "Level3" etc. for level transitions.
     public string nextLevelName = "";
+
+    // Seconds to wait before loading the next level.
     public float nextLevelDelay = 3f;
 
     // --- Effects ---
-    // Reference to the FloatingText prefab for "+1" popups.
+
+    // Prefab for the floating "+1" text that appears when
+    // collecting a pickup.
     public GameObject floatingTextPrefab;
 
     // =====================================================
-    // PRIVATE VARIABLES
+    // PRIVATE VARIABLES (only this script uses these)
     // =====================================================
 
+    // Physics component for moving the ball.
     private Rigidbody rb;
+
+    // How many pickups the player has collected.
     private int score;
+
+    // Whether the player has won this level.
     private bool gameWon;
+
+    // Audio component for playing sounds.
     private AudioSource audioSource;
+
+    // How many seconds have passed since the level started.
     private float currentTime;
+
+    // The fastest completion time for this level.
     private float bestTime;
+
+    // Timer for delay after winning before loading next level.
     private float winTimer;
 
-    // The "neutral" accelerometer reading when the game starts.
-    // This is the tilt angle the player naturally holds their phone.
-    // All movement is calculated RELATIVE to this starting position.
-    // This means the player doesn't have to hold their phone 
-    // perfectly flat — whatever angle they start at is "center."
+    // The accelerometer reading when the game starts.
+    // All tilt is measured RELATIVE to this starting position.
+    // This means whatever angle the player holds their phone
+    // at the start = "center" (no movement).
     private Vector3 calibratedZero;
-
-    // Whether calibration has been done.
-    private bool isCalibrated;
 
     // =====================================================
     // UNITY LIFECYCLE FUNCTIONS
     // =====================================================
 
+    // Runs once when the level starts.
     void Start()
     {
-        // Get components.
+        // Find components on this GameObject.
         rb = GetComponent<Rigidbody>();
         audioSource = GetComponent<AudioSource>();
 
-        // Initialize game state.
+        // Set starting values.
         score = 0;
         gameWon = false;
         currentTime = 0f;
@@ -97,41 +147,41 @@ public class MobilePlayerController : MonoBehaviour
         // Hide win text.
         winText.SetActive(false);
 
-        // Display initial values.
+        // Show initial score and timer.
         UpdateScoreText();
         UpdateTimerText();
 
-        // Load best time for this level.
+        // Load the best time saved on this device for THIS level.
+        // Each level has its own key: "BestTime_MiniGame", "BestTime_Level2", etc.
         string levelKey = "BestTime_" + SceneManager.GetActiveScene().name;
         bestTime = PlayerPrefs.GetFloat(levelKey, 0f);
         UpdateBestTimeText();
 
-        // Prevent screen from sleeping during gameplay.
+        // Prevent the phone screen from going dark during gameplay.
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
 
-        // CALIBRATE the accelerometer!
-        // Save the current phone orientation as the "neutral" position.
-        // This means wherever the player is holding their phone 
-        // when the game starts = no movement.
+        // Save the current phone tilt as the "zero" / neutral position.
+        // All future tilts are compared against this starting position.
         CalibrateAccelerometer();
     }
 
+    // Runs every frame (about 60 times per second).
     void Update()
     {
-        // Keyboard restart (for PC testing).
+        // Allow keyboard restart for PC testing.
         if (Input.GetKeyDown(KeyCode.R))
         {
             RestartGame();
         }
 
-        // Count time while playing.
+        // Count time upward while the game is still going.
         if (!gameWon)
         {
             currentTime += Time.deltaTime;
             UpdateTimerText();
         }
 
-        // Handle next level loading after win.
+        // After winning, wait then load next level.
         if (gameWon && nextLevelName != "")
         {
             winTimer += Time.deltaTime;
@@ -142,39 +192,49 @@ public class MobilePlayerController : MonoBehaviour
         }
     }
 
+    // Runs at fixed intervals for physics (50 times per second).
     void FixedUpdate()
     {
+        // Only allow movement if the game is still active.
         if (!gameWon)
         {
             // =============================================
-            // FIXED TILT CONTROLS! 📱
+            // TILT CONTROLS — THE FIX IS HERE!
             // =============================================
 
-            // Read the raw accelerometer values.
+            // Step 1: Read the raw accelerometer (phone tilt sensor).
             Vector3 rawTilt = Input.acceleration;
 
-            // Subtract the calibrated zero point.
-            // This makes the starting phone position = no movement.
-            // If the player starts holding the phone tilted 30°,
-            // that 30° becomes the new "flat/center" position.
+            // Step 2: Subtract the calibrated zero point.
+            // This makes the player's starting angle = no movement.
+            // If they started holding the phone at 30 degrees,
+            // that 30 degrees becomes the new "flat/center".
             Vector3 adjustedTilt = rawTilt - calibratedZero;
 
-            // CLAMP the tilt values to prevent the "wrong direction" bug!
-            // Mathf.Clamp(value, min, max) limits a number to a range.
+            // Step 3: CLAMP the values to a safe range!
+            // This is THE KEY FIX for the wrong-direction bug!
             //
-            // If maxTiltAngle is 0.5:
-            //   A tilt of 0.3 stays as 0.3 ✅
-            //   A tilt of 0.7 gets clamped to 0.5 ✅ (prevented!)
-            //   A tilt of -0.8 gets clamped to -0.5 ✅ (prevented!)
+            // Without clamping:
+            //   Tilt 30° → value 0.5 → ball moves forward ✅
+            //   Tilt 90° → value 1.0 → ball moves fast ✅
+            //   Tilt 120° → value 0.87 → ball SLOWS DOWN ❌
+            //   Tilt 150° → value 0.5 → ball goes BACKWARD ❌
             //
-            // This means no matter HOW far the player tilts,
-            // the ball never gets a "backwards" signal!
+            // With clamping (max 0.5):
+            //   Tilt 30° → value 0.5 → CLAMPED to 0.5 → correct ✅
+            //   Tilt 90° → value 1.0 → CLAMPED to 0.5 → still correct ✅
+            //   Tilt 120° → value 0.87 → CLAMPED to 0.5 → still correct ✅
+            //   Tilt 150° → value 0.5 → CLAMPED to 0.5 → still correct ✅
+            //
+            // The ball NEVER gets a wrong signal, no matter how far you tilt!
             float clampedX = Mathf.Clamp(adjustedTilt.x, -maxTiltAngle, maxTiltAngle);
             float clampedY = Mathf.Clamp(adjustedTilt.y, -maxTiltAngle, maxTiltAngle);
 
-            // Apply DEAD ZONE — ignore very small tilts.
-            // This prevents the ball from slowly drifting when 
-            // the phone is almost level.
+            // Step 4: Apply dead zone — ignore very tiny tilts.
+            // Phone sensors have small random noise even when held still.
+            // Without dead zone, the ball slowly drifts on its own.
+            // Mathf.Abs() gives the absolute value (removes negative sign)
+            // so we check magnitude regardless of direction.
             if (Mathf.Abs(clampedX) < deadZone)
             {
                 clampedX = 0f;
@@ -184,14 +244,17 @@ public class MobilePlayerController : MonoBehaviour
                 clampedY = 0f;
             }
 
-            // Create movement direction from the clamped tilt values.
+            // Step 5: Create the movement direction from clamped tilt.
+            // X tilt → X movement (left/right)
+            // Y tilt → Z movement (forward/backward)
+            // Y axis (up/down) is always 0 — no flying!
             Vector3 movement = new Vector3(
-                clampedX * tiltSensitivity,    // Left/Right
-                0.0f,                           // No vertical (no flying!)
-                clampedY * tiltSensitivity      // Forward/Backward
+                clampedX * tiltSensitivity,
+                0.0f,
+                clampedY * tiltSensitivity
             );
 
-            // Apply force to move the ball.
+            // Step 6: Apply force to push the ball.
             rb.AddForce(movement * speed);
         }
     }
@@ -200,14 +263,19 @@ public class MobilePlayerController : MonoBehaviour
     // COLLISION HANDLING
     // =====================================================
 
+    // Called when the ball enters a Trigger collider.
     void OnTriggerEnter(Collider other)
     {
+        // Only process if the game is still active.
+        if (gameWon) return;
+
+        // Check if we touched a good pickup.
         if (other.gameObject.CompareTag("Pickup"))
         {
             // Hide the pickup.
             other.gameObject.SetActive(false);
 
-            // Spawn floating "+1" text.
+            // Spawn floating "+1" text at the pickup's position.
             if (floatingTextPrefab != null)
             {
                 Instantiate(
@@ -217,7 +285,7 @@ public class MobilePlayerController : MonoBehaviour
                 );
             }
 
-            // Increase score.
+            // Add 1 to score.
             score += 1;
             UpdateScoreText();
 
@@ -230,20 +298,18 @@ public class MobilePlayerController : MonoBehaviour
                 audioSource.pitch = originalPitch;
             }
 
-            // Screen shake.
+            // Trigger screen shake.
             if (ScreenShake.instance != null)
             {
                 ScreenShake.instance.TriggerShake(0.1f, 0.08f);
             }
 
-            // Vibrate phone on Android! 📳
-            // Handheld.Vibrate() makes the phone vibrate briefly.
-            // This only works on actual mobile devices, not in the editor.
+            // Vibrate phone on Android.
             #if UNITY_ANDROID
             Handheld.Vibrate();
             #endif
 
-            // Check win condition.
+            // Check if all pickups collected = WIN!
             if (score >= totalPickups)
             {
                 gameWon = true;
@@ -254,7 +320,7 @@ public class MobilePlayerController : MonoBehaviour
                     audioSource.PlayOneShot(winSound);
                 }
 
-                // Save best time for this level.
+                // Save best time for this specific level.
                 string levelKey = "BestTime_" + SceneManager.GetActiveScene().name;
                 if (bestTime == 0f || currentTime < bestTime)
                 {
@@ -271,16 +337,15 @@ public class MobilePlayerController : MonoBehaviour
     // PUBLIC FUNCTIONS (called by UI buttons)
     // =====================================================
 
-    // Called by the Restart button.
+    // Called by the on-screen Restart button.
     public void RestartGame()
     {
         SceneManager.LoadScene(SceneManager.GetActiveScene().name);
     }
 
-    // Called by a "Recalibrate" button (optional).
-    // If the player wants to change their neutral holding position,
-    // they can tap this button while holding the phone at 
-    // their preferred angle.
+    // Called by a Recalibrate button (optional).
+    // Resets the "center" tilt position to whatever angle
+    // the player is currently holding the phone.
     public void RecalibrateControls()
     {
         CalibrateAccelerometer();
@@ -290,25 +355,26 @@ public class MobilePlayerController : MonoBehaviour
     // PRIVATE FUNCTIONS
     // =====================================================
 
-    // Saves the current accelerometer reading as the "zero" point.
-    // All future tilt measurements are relative to this.
+    // Saves the current accelerometer reading as "zero."
+    // All future tilts are measured relative to this.
     void CalibrateAccelerometer()
     {
-        // Read the current accelerometer values.
         calibratedZero = Input.acceleration;
-        isCalibrated = true;
     }
 
+    // Updates the score text on screen.
     void UpdateScoreText()
     {
         scoreText.text = "Score: " + score.ToString();
     }
 
+    // Updates the timer text on screen.
     void UpdateTimerText()
     {
         timerText.text = "Time: " + currentTime.ToString("F2");
     }
 
+    // Updates the best time text on screen.
     void UpdateBestTimeText()
     {
         if (bestTime == 0f)
