@@ -1,8 +1,7 @@
 # Clash-Bowl
 
 # 🎮 Clash Bowl - Unity Mini Game
-
-A fast-paced mobile mini-game built using Unity where the player controls a ball to collect pickups within a limited time.
+Clash Bowl is a Unity-based game developed with a focus on smooth gameplay mechanics, responsive controls, and immersive player experience. This project showcases my skills in game development, 3D modeling, and interactive design.
 
 ---
 
